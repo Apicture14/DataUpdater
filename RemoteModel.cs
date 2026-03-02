@@ -46,6 +46,26 @@ public abstract class Model
                 Console.WriteLine(sb.ToString());
             }    
         }
+
+        public async Task<OutRoute> ExportToObject(MySqlConnection c)
+        {
+            OutRoute outRoute = new OutRoute()
+            {
+                code = (number==""?name.Split("|")[0]:number),
+                color = color,
+            };
+            foreach (var x in dwells)
+            {
+                
+                var rs = await Fetcher.Sid2NameFromDb(c, x.name);
+                var s = rs.Split("|");
+                outRoute.outStations.Add(new OutStation()
+                {
+                    cn = s[0],
+                    ncn = s[1],
+                });
+            }
+        }
     }
     public record Pack
     {
