@@ -1,12 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using MySql.Data.MySqlClient;
-using Org.BouncyCastle.Math.EC.Rfc7748;
+using System.Linq;
+using System.IO;
+using System.Text.Json.Serialization;
+using DataUpdater.Core;
+using DataUpdater.DAO;
 
-namespace DataUpdater;
+
+namespace DataUpdater.Models;
 
 public abstract class Model
 {
@@ -18,6 +26,10 @@ public abstract class Model
         public List<string> connections {get;set;}
         public override string ToString()
         {
+            if (string.IsNullOrEmpty(name))
+            {
+                return $"Null({id})";
+            }
             return this.name;
         }
     }
@@ -29,11 +41,11 @@ public abstract class Model
         public int color {get;set;}
         public List<string> depots {get;set;}
         public List<Dwell> dwells {get;set;}
-        public async Task Inspect(MySqlConnection db=null)
+        public async Task Inspect(DataAccessor dataAccessor = null)
         {
             Console.WriteLine($"[Overall] 线路:{id} 名称:{name}[{number}] 通过{dwells.Count}个车站\n");
             int c = 0;
-            Dictionary<string, string> d = (db==null)?null:await Fetcher.GetSidNameTable(db);
+            Dictionary<string, string> d = (dataAccessor is null)?null:await Fetcher.GetSidNameTable(dataAccessor);
             foreach (var x in dwells)
             {
                 c++;
@@ -47,24 +59,36 @@ public abstract class Model
             }    
         }
 
-        public async Task<OutRoute> ExportToObject(MySqlConnection c)
+        public async Task<Tuple<bool,object?>> Export(DataAccessor dataAccessor,FileStream? outputFs=null)
         {
             OutRoute outRoute = new OutRoute()
             {
-                code = (number==""?name.Split("|")[0]:number),
+                code = name.Split("|")[0],
                 color = color,
+                storedStations = new List<OutStation>()
             };
             foreach (var x in dwells)
             {
-                
-                var rs = await Fetcher.Sid2NameFromDb(c, x.name);
+                var rs = await Fetcher.Sid2NameFromDb(dataAccessor, x.station);
                 var s = rs.Split("|");
-                outRoute.outStations.Add(new OutStation()
+                outRoute.storedStations.Add(new OutStation()
                 {
                     cn = s[0],
                     ncn = s[1],
                 });
             }
+            if (outputFs == null) return new(true,outRoute);
+            using (outputFs)
+            {
+                if (!outputFs.CanWrite){return new(false,null);}
+
+                await JsonSerializer.SerializeAsync(outputFs, outRoute,new JsonSerializerOptions()
+                {
+                    WriteIndented = true,
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                });
+            }
+            return new (true,outRoute);
         }
     }
     public record Pack
@@ -99,7 +123,7 @@ public abstract class Model
         public int z {get;set;}
         public Point pos => new Point(x, z);
 
-        public async Task Inspect(MySqlConnection db)
+        public async Task Inspect(DataAccessor dataAccessor)
         {
             string s = """
                        玩家:{0}
@@ -117,17 +141,16 @@ public abstract class Model
             s = string.Format(s, name, id, x, z);
             if (routeId == "")
             {
-                st = string.Format(st, (db == null) ? stationId : await Fetcher.FindStationBySidFromDb(db, stationId),"At Station");
+                st = string.Format(st, (dataAccessor == null) ? stationId : await Fetcher.Sid2StaionObject(dataAccessor, stationId) ?? new Station(){id = stationId},"At Station");
                 s += st;
             }
             else
             {
-                
-                if (db != null)
+                if (dataAccessor != null)
                 {
-                    routeId = (await Fetcher.FindRouteByRidFromDb(db, routeId)).name;
-                    routeStationId1 = (await Fetcher.FindStationBySidFromDb(db,routeStationId1)).name;
-                    routeStationId2 = (await Fetcher.FindStationBySidFromDb(db, routeStationId2)).name;
+                    routeId = (await Fetcher.Rid2RouteObject(dataAccessor, routeId)).name;
+                    routeStationId1 = (await Fetcher.Sid2StaionObject(dataAccessor,routeStationId1)).name;
+                    routeStationId2 = (await Fetcher.Sid2StaionObject(dataAccessor, routeStationId2)).name;
                 }
                 mv = string.Format(mv, routeId, routeStationId1, routeStationId2,"On Ride");
                 s += mv;
@@ -146,7 +169,57 @@ public abstract class Model
     {
         public string code {get; set;}
         public string name {get; set;}
-        public List<OutStation> outStations { get; set; }  
+        public int color {get;set;}
+        public List<OutStation> storedStations { get; set; }  
+    }
+    
+    public struct MTRStr
+    {
+        public string Cjk { get; set; }
+        public string NonCjk { get; set; }
+        public List<string> Extras  { get; set; }
+
+        public MTRStr(string src)
+        {
+            if (!src.Contains("|"))
+            {
+                Cjk = src;
+                return;
+            }
+            if (src.Contains("||"))
+            {
+                var y = src.Split("||");
+                Extras = y.Skip(1).ToList();
+                src = y[0];
+            }
+            var x = src.Split("|");
+            Cjk = x[0];
+            NonCjk = x[1];
+        }
+    }
+
+    public record ArrivalPack
+    {
+        public long arrival { get; set; }
+        public long departure { get; set; }
+        public string destination { get; set; }
+        public bool isTerminating { get; set; }
+        public string platformName {get;set;}
+        public bool realTime { get; set; }
+        public string routeName {get;set;}
+        public string routeNumber {get;set;}
+    }
+
+    public record Arrival
+    {
+        public DateTimeOffset arrivalTime {get;set;}
+        public DateTimeOffset departureTime {get;set;}
+        public Station? destination {get;set;}
+        public string destinationName {get;set;}
+        public bool isTerminating {get;set;}
+        public string platformName {get;set;}
+        public bool isScheduled {get;set;}
+        public Route? routeFrom {get;set;}
     }
 }
 
