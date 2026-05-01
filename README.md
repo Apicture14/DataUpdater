@@ -73,7 +73,7 @@ Post
 }
 ```
 
-* stationIdHex : 查询的车站id **包裹在列表中**
+* stationIdHex : 查询的车站id列表
 * *maxCountPerPlatform : 每站台的最大数量*
 
 #### Returns
@@ -86,7 +86,7 @@ Post
     "version": 1,
     "data": {
         "currentTime":67890,
-        “arrivals":[
+        "arrivals":[
             #Arrival对象列表
         ]
     }
